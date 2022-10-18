@@ -1,0 +1,245 @@
+---
+title: "P8157 HW2"
+author: Shihui Zhu
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(data.table)
+library(Hotelling)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(gtsummary)
+
+library(geepack)
+library(doBy)
+```
+
+## Q1.
+
+1. Consider a marginal model for the log odds of moderate or severe onycholysis. Using GEE, set up a suitable model assuming linear trends. Use month as the time variable. Assume “exchangeable” correlation for the association among the repeated binary responses.
+
+```{r}
+toenail <- fread("toenail.txt")
+colnames(toenail) <- c("id", "response", "treatment", "month", "visit")
+toenail$treatment <- as.factor(toenail$treatment)
+toenail$id <- as.factor(toenail$id)
+```
+
+Explore the proportion of moderate/severe onycholysis with time:
+```{r}
+summary1 <- toenail[,j=list(prop_severe = mean(response,na.rm=TRUE)*100), 
+                    by = c("treatment","visit")]
+dcast(summary1, treatment ~ visit, value = "prop_severe")
+```
+
+There seems to be a linear trend for both treatments with increasing in time. Group with oral treatment A seems to have a lower raet of moderate/severe onycholysis. 
+
+Set up GEEE model with linear trend with months and interaction with treatments:
+
+```{r}
+gee1 <- geeglm(response ~ treatment*month, id = id, data = toenail, 
+               family = binomial(link = "logit"), corstr = "exchangeable")
+summary(gee1)
+```
+
+We see that the coeffciients for treatment and month interaction is not significant. We then test if the treatment and months interaction is necessary:
+
+```{r}
+L <- matrix(0,ncol=4,nrow=1) # ncol = number of coeffcients in the model, nrow = number of tests 
+L[1,c(4)]  <- c(1)
+L
+esticon(gee1,L=L,joint.test = TRUE)
+```
+
+We have p-value of $0.151 > 0.05$, therefore we conclude that the profiles of change do not differ between treatment A and B. 
+
+Set up GEEE model with linear trend (without month and treatment interaction):
+
+```{r}
+gee2 <- geeglm(response ~ treatment + month, id = id, data = toenail, 
+               family = binomial(link = "logit"), corstr = "exchangeable")
+summary(gee2)
+```
+
+2. Provide Interpretations for the coefficients in your model.
+
+Let $\pmb{y}_i$ denote the vector of onycholysis outcome for subject id $i$, and $E(\pmb{y}_i) = \pmb{\mu}_i$. 
+
+The model is therefore $logit(\pmb{\mu}_i) = -0.6104 -0.2051\pmb{month}_i+ 0.0402(\pmb{treatment = oral\ treatment\ A})_i$. However, the coefficient for treatment group A is not significant. 
+
+The covariance matrix is $\pmb{V}_i = \pmb{A}^{1/2}_i\pmb{R}_i\pmb{A}^{1/2}_i \cdot \phi$, where $\phi = 1.09$ is the dispersion parameter, and $\alpha = 0.422$ for the working correlation matrix. Therefore, $R(\alpha)_i$ is a working correlation matrix of
+$$R(\alpha)_i = \begin{bmatrix}
+1& 0.424 & ... & 0.424\\
+0.424& 1& ... & 0.424\\
+...& \\
+...& 0.424& ... & 1
+\end{bmatrix}_{7\times7}$$
+
+```{r}
+se.txtB <- summary(gee1)$coefficients["(Intercept)","Std.err"]
+se.txtA <- summary(gee1)$coefficients["treatment1","Std.err"]
+se.time <- summary(gee1)$coefficients["month","Std.err"]
+txtB <- exp(coef(gee1)["(Intercept)"] + c(0, -1, 1) * se.txtB * qnorm(0.975))
+txtA <- exp(coef(gee1)["treatment1"] + c(0, -1, 1) * se.txtA * qnorm(0.975))
+time <- exp(coef(gee1)["month"] + c(0, -1, 1) * se.time * qnorm(0.975))
+
+out.logit <- rbind(txtB, txtA, time)
+colnames(out.logit)=c('Estimate of OR','95% CI lower','95% CI upper')
+out.logit %>% knitr::kable(digits = 3)
+```
+
+* $\beta_{i0} = -0.6104$: Holding the month post randomization at constant, the odds of having a moderate/severe onycholysis with the oral treatments B is about `r round(txtB[1],3)` (95% CI [`r round(txtB[2],3)`,`r round(txtB[3],3)`]) times the corresponding odds from the oral treatments A. 
+
+* $\beta_{i1} = 0.0402$: Holding the month post randomization at constant, the odds of having a moderate/severe onycholysis with the oral treatments A is about `r round(txtA[1],3)` (95% CI [`r round(txtA[2],3)`,`r round(txtA[3],3)`]) times the corresponding odds from the oral treatments B. 
+
+* $\beta_{i2} = -0.2051$: Holding the treatment group at constant, the odds of having a moderate/severe onycholysis in the current month is `r round(time[1],3)` (95% CI [`r round(time[2],3)`,`r round(time[3],3)`]) of the previous month. 
+
+3. From the results of your analysis what conclusions do you draw about the effect of treatment on changes in the severity of onycholysis over time? Provide results that support your conclusions.
+
+From the above result, we see that the profiles of change do not differ between treatment A and B over time i.e. no interaction between time and treatments. Group treated by oral treatment B tends to have a lower odds of getting moderate/severe onycholysis. And as the treatment time increases, the severity of onycholysis decreases among both treatment groups.
+
+4. Try Different correlation structures. Is the analysis and inference sensitive to this choice?
+
+Set up GEE with AR(1) correlation:
+
+```{r}
+gee3 <- geeglm(response ~ treatment + month, id = id, data = toenail, 
+               family = binomial(link = "logit"), corstr = "ar1")
+summary(gee3)
+```
+
+Set up GEE with unstructured correlation:
+
+```{r}
+gee4 <- geeglm(response ~ treatment + month, id = id, data = toenail, 
+               family = binomial(link = "logit"), corstr = "unstructured")
+summary(gee4)
+```
+
+The $\alpha$ values for both correlation matrix are quite different from $0.424$. Therefore analysis and inference is sensitive to the choice.
+
+## Q2
+
+1. Set up a suitable GEE model for rate of skin cancers with Treatment and Year as covariates.
+
+```{r}
+skin <- fread("skin.txt")
+colnames(skin) <- c("id", "center", "age", "skin", "gender", "exposure", "y", "treatment", "year")
+skin$year <- as.numeric(skin$year)
+skin$treatment <- as.factor(skin$treatment)
+skin$gender <- as.factor(skin$gender)
+skin$skin <- as.factor(skin$skin)
+skin$id <- as.factor(skin$id)
+```
+
+Explore the trend of year v.s. outcome:
+
+```{r}
+itp <- interaction(skin$treatment, skin$year)
+tapply(skin$y, itp, mean) # crude check of group mean by year*treatment
+```
+
+We see there is a quadratic relationship between year and count of new skin cancers for both treatment groups.
+
+Set up GEE with Treatment and Year as covariates (quadratic trend with year, interaction with treatment), with exchangeable correlation:
+
+```{r}
+gee5 <- geeglm(y ~ treatment * (year + I(year^2)), data = skin, 
+               family = "poisson", id = id, corstr = "exchangeable")
+summary(gee5)
+```
+Check if the interaction term is necessary:
+
+```{r}
+L <- matrix(0,ncol=6,nrow=2) # ncol = number of coeffcients in the model, nrow = number of tests 
+L[1,c(5)]  <- c(1)
+L[2,c(6)]  <- c(1)
+L
+esticon(gee5,L=L,joint.test = TRUE)
+```
+
+We got a p-value of $0.759 > 0.05$, therefore the interaction is not necessary. Then we set up the GEE with Treatment and Year as covariates (quadratic trend with year), with exchangeable correlation:
+
+```{r}
+gee6 <- geeglm(y ~ treatment + year + I(year^2), data = skin, 
+               family = "poisson", id = id, corstr = "exchangeable")
+summary(gee6)
+```
+
+2. Provide Interpretations for the coefficients in your model.
+
+Let $\pmb{y}_i$ denote the vector of onycholysis outcome for subject id $i$, and $E(\pmb{y}_i) = \pmb{\mu}_i$. 
+
+The model is therefore $logit(\pmb{\mu}_i) = -1.2456 + 0.1469(\pmb{treatment = beta\ carotene})_i - 0.1322\pmb{year}_i + 0.0262\pmb{year}_i^2$. However, the coefficient for year, year^2 and treatment group beta carotene is not significant. 
+
+The covariance matrix is $\pmb{V}_i = \pmb{A}^{1/2}_i\pmb{R}_i\pmb{A}^{1/2}_i \cdot \phi$, where $\phi = 2.65$ is the dispersion parameter, and $\alpha = 0.377$ for the working correlation matrix. Therefore, $R(\alpha)_i$ is a working correlation matrix of
+$$R(\alpha)_i = \begin{bmatrix}
+1& 0.377 & ... & 0.377\\
+0.377& 1& ... & 0.377\\
+...& \\
+...& 0.377& ... & 1
+\end{bmatrix}_{5\times5}$$
+
+```{r}
+se.txtP <- summary(gee6)$coefficients["(Intercept)","Std.err"]
+se.txt1 <- summary(gee6)$coefficients["treatment1","Std.err"]
+se.year <- summary(gee6)$coefficients["year","Std.err"]
+se.yearSquare <- summary(gee6)$coefficients["I(year^2)","Std.err"]
+txtP <- exp(coef(gee6)["(Intercept)"] + c(0, -1, 1) * se.txtP * qnorm(0.975))
+txt1 <- exp(coef(gee6)["treatment1"] + c(0, -1, 1) * se.txt1 * qnorm(0.975))
+year <- exp(coef(gee6)["year"] + c(0, -1, 1) * se.year * qnorm(0.975))
+yearSquare <- exp(coef(gee6)["I(year^2)"] + c(0, -1, 1) * se.yearSquare * qnorm(0.975))
+
+out.logit <- rbind(txtP, txt1, year, yearSquare)
+colnames(out.logit)=c('Estimate of OR','95% CI lower','95% CI upper')
+out.logit %>% knitr::kable(digits = 3)
+```
+
+
+* $\beta_{i0} = -1.2456$: Holding the year post randomization at constant, the rate of skin cancers with the placebo treatment is about `r round(txtP[1],3)` (95% CI [`r round(txtP[2],3)`,`r round(txtP[3],3)`]) times the corresponding rate from the beta carotene treatment. This is statistically significant. 
+
+* $\beta_{i1} = 0.1469$: Holding the year post randomization at constant, the rate of skin cancers with beta carotene treatment is about `r round(txt1[1],3)` (95% CI [`r round(txt1[2],3)`,`r round(txt1[3],3)`]) times the corresponding rate from the placebo. This is not statistically significant.
+
+* $\beta_{i2} = -0.1322$: Holding the treatment group at constant, the rate of skin cancers in the current year is `r round(year[1],3)` (95% CI [`r round(year[2],3)`,`r round(year[3],3)`]) of the previous year. This is not statistically significant.
+
+* $\beta_{i3} = 0.0262$: Holding the treatment group at constant, the rate of skin cancers in the square of current year is `r round(yearSquare[1],3)` (95% CI [`r round(yearSquare[2],3)`,`r round(yearSquare[3],3)`]) of the previous year squared. This is not statistically significant.
+
+3. From the results of your analysis what conclusions do you draw about the effect of beta carotene on the rate of skin cancers? Provide results that support your conclusions.
+
+The beta carotene doesn't prevent the rate of skin cancers from growing in each year because placebo group has a lower rate of new skin cancers compared to the group treated by beta carotene.
+
+4. Repeat the above analysis adjusting for skin type, age, and the count of the number of previous skin cancers. What conclusions do you draw about the effect of beta carotene on the adjusted rate of skin cancers?
+
+```{r}
+gee7 <- geeglm(y ~ treatment + skin + exposure + year + I(year^2), 
+               data = skin, family = "poisson", id = id, corstr = "exchangeable")
+summary(gee7)
+```
+The more previous exposures are, the larger of the rate of skin cancers. And the effect of beta carotene on the adjusted rate of skin cancers is still negative i.e. group treated with beta carotene has larger adjusted rate of skin cancer. 
+
+5. Try Different correlation structures. Is the analysis and inference sensitive to this choice?
+
+Try GEE with unstructured correlation:
+
+```{r}
+gee8 <- geeglm(y ~ treatment + skin + exposure + year + I(year^2), 
+               data = skin, family = "poisson", id = id, corstr = "unstructured")
+summary(gee8)
+```
+
+Try GEE with AR(1):
+
+```{r}
+gee9 <- geeglm(y ~ treatment + skin + exposure + year + I(year^2), 
+               data = skin, family = "poisson", id = id, corstr = "ar1")
+summary(gee9)
+```
+
+We observe that the value for dispersion parameter and $\alpha$ does not differ much with different correlation structures. Therefore we conclude that the analysis and inference are insensitive to this choice.
+
+6. Do you need to account for overdisperion. Comment.
+
+Yes. We have $\phi = 1.64 > 1$, therefore we need to account for overdispersion. 
